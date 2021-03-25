@@ -2,15 +2,13 @@ import random
 
 import simpy
 
+DEBUG_MODE_ENABLED = False # True
 
 RANDOM_SEED = 42
-NUM_BOARDINGPASS_QUEUES = 2     # Number of BOARDINGPASS_QUEUES in the airport
-NUM_SCANNER_QUEUES = 2          # Number of SCANNER_QUEUES in the airport
-MEAN_BOARDINGPASS_TIME = 7.5    # Average minutes of boardingpass checking time (exponential distribution)
-SCANNER_PARAMS = [5, 10]        # Limits for uniform distribution of scanning time
-T_INTERARRIVAL = 0.5            # Exponential distribution with mean ~0.5 minute
-SIM_TIME = 60                   # Simulation time in minutes
-
+MEAN_BOARDINGPASS_TIME = 0.75   # Exponential service time with mean rate 0.75 minutes
+SCANNER_PARAMS = [0.5, 1]       # Uniformly distributed between 0.5 and 1 minute
+T_INTERARRIVAL = 0.02            # Mean interarrival rate of 1 passenger per 0.02 minutes, or 50 passengers per minute
+SIM_TIME = 60                  # Simulation time in minutes
 
 class Airport(object):
     def __init__(self,
@@ -31,14 +29,16 @@ class Airport(object):
         # and from negative infinity to 0 if lambd is negative.
         rand_check_bp_time = random.expovariate(1 / self.mean_boardingpass_time)
         yield self.env.timeout(rand_check_bp_time)
-        print("Check boarding pass {} in {} minutes." .format(passenger, round(rand_check_bp_time, 2)))
+        if DEBUG_MODE_ENABLED:
+            print("Check boarding pass {} in {} minutes." .format(passenger, round(rand_check_bp_time, 2)))
     
 
     def check_scanning(self, passenger):
         rand_scanning_time = random.uniform(self.scanner_params[0],
                                             self.scanner_params[1])
         yield self.env.timeout(rand_scanning_time)
-        print("Scanning {} in {} minutes." .format(passenger, round(rand_scanning_time, 2)))
+        if DEBUG_MODE_ENABLED:
+            print("Scanning {} in {} minutes." .format(passenger, round(rand_scanning_time, 2)))
 
 
 def passenger(env, name, ap):
@@ -51,24 +51,42 @@ def passenger(env, name, ap):
     Then it starts the scanning process and waits for it to finish.
 
     Then passenger leaves the airport system.
-    """
-    print('{} arrives at the airport at {} minutes'.format(name, round(env.now,2)))
+    """    
+    global total_wait_time
+    global total_passenger_count
+    
+    if DEBUG_MODE_ENABLED:
+        print('{} arrives at the airport at {} minutes'.format(name, round(env.now,2)))
 
     with ap.boardingpass_queue.request() as bp_check_request:
+        bp_start_wait_time = env.now
         yield bp_check_request
 
-        print('{} enters the boardingpass checking process at {} minutes'.format(name, round(env.now,2)))
+        total_wait_time += (env.now - bp_start_wait_time)
+        if DEBUG_MODE_ENABLED:
+            print('{} enters the boardingpass checking process at {} minutes'.format(name, round(env.now,2)))
+            print('{} total_wait_time due to {} wait for boardingpass checking\n'.format(total_wait_time, name))
+
         yield env.process(ap.check_boardingpass(name))
 
-        print('{} leaves the boardingpass checking process at {} minutes'.format(name, round(env.now,2)))
+        if DEBUG_MODE_ENABLED:
+            print('{} leaves the boardingpass checking process at {} minutes'.format(name, round(env.now,2)))
     
     with ap.scanner_queue.request() as scan_request:
+        scan_start_wait_time = env.now
         yield scan_request
 
-        print('{} enters the scanning process at {} minutes'.format(name, round(env.now,2)))
+        total_wait_time += (env.now - scan_start_wait_time)
+        if DEBUG_MODE_ENABLED:
+            print('{} enters the scanning process at {} minutes'.format(name, round(env.now,2)))
+            print('{} total_wait_time due to {} wait for scanning\n'.format(total_wait_time, name))
+
         yield env.process(ap.check_scanning(name))
 
-        print('{} leaves the scanning process & airport at {} minutes\n'.format(name, round(env.now,2)))
+        total_passenger_count += 1
+        if DEBUG_MODE_ENABLED:
+            print('{} leaves the scanning process & airport at {} minutes\n'.format(name, round(env.now,2)))
+            print('{} total_passenger_count\n'.format(total_passenger_count))
 
 
 def setup(env,
@@ -98,17 +116,26 @@ def setup(env,
 
 
 # Setup and start the simulation
-print('Airport in action..!!')
+print('Airport in action..!!\n')
 random.seed(RANDOM_SEED)  # This helps reproducing the results
 
-# Create an environment and start the setup process
-env = simpy.Environment()
-env.process(setup(env,
-                    NUM_BOARDINGPASS_QUEUES,
-                    NUM_SCANNER_QUEUES,
-                    MEAN_BOARDINGPASS_TIME,
-                    SCANNER_PARAMS,
-                    T_INTERARRIVAL))
+for bp_queue in range(18,22):
+    for scan_queue in range(18,22):
+        total_wait_time = 0
+        total_passenger_count = 0
 
-# Execute!
-env.run(until=SIM_TIME)
+        # Create an environment and start the setup process
+        env = simpy.Environment()
+        env.process(setup(env,
+                        num_boardingpass_queues=bp_queue,
+                        num_scanner_queues=scan_queue,
+                        mean_boardingpass_time=MEAN_BOARDINGPASS_TIME,
+                        scanner_params=SCANNER_PARAMS,
+                        t_inter=T_INTERARRIVAL))
+
+        # Execute!
+        env.run(until=SIM_TIME)
+
+        avg_wait_time = round(total_wait_time / total_passenger_count, 2)
+        print("avg_wait_time is {} minutes with\n- {} minutes of total_wait_time,\n- {} total_passenger_count,\n- {} lines of boardingpass queue, and\n- {} lines of scanner queue.\n".format(
+            avg_wait_time, total_wait_time, total_passenger_count, bp_queue, scan_queue))
