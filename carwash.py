@@ -22,14 +22,16 @@ import simpy
 
 
 RANDOM_SEED = 42
-NUM_MACHINES = 2  # Number of machines in the carwash
-WASHTIME = 5      # Minutes it takes to clean a car
-T_INTER = 7       # Create a car every ~7 minutes
-SIM_TIME = 20     # Simulation time in minutes
+NUM_WASH_MACHINES = 2       # Number of washing machines in the carwash
+NUM_WAX_MACHINES = 2        # Number of waxing machines in the carwash
+MEAN_WASHTIME = 7.5         # Average minutes of washing time (exponential distribution)
+WAXTIME_PARAMS = [5, 10]    # Limits for uniform distribution of waxing time
+T_INTERARRIVAL = 0.5        # Exponential distribution with mean ~0.5 minute
+SIM_TIME = 60               # Simulation time in minutes
 
 
 class Carwash(object):
-    """A carwash has a limited number of machines (``NUM_MACHINES``) to
+    """A carwash has a limited number of machines (``NUM_WASH_MACHINES``) to
     clean cars in parallel.
 
     Cars have to request one of the machines. When they got one, they
@@ -37,62 +39,106 @@ class Carwash(object):
     takes ``washtime`` minutes).
 
     """
-    def __init__(self, env, num_machines, washtime):
+    def __init__(self,
+                env,
+                num_wash_machines,
+                num_wax_machines,
+                mean_washtime,
+                waxtime_params):
         self.env = env
-        self.machine = simpy.Resource(env, num_machines)
-        self.washtime = washtime
+        self.wash_machine = simpy.Resource(env, num_wash_machines)
+        self.wax_machine = simpy.Resource(env, num_wax_machines)
+        self.mean_washtime = mean_washtime
+        self.waxtime_params = waxtime_params
 
     def wash(self, car):
         """The washing processes. It takes a ``car`` processes and tries
         to clean it."""
-        yield self.env.timeout(WASHTIME)
-        print("Carwash removed %d%% of %s's dirt." %
-              (random.randint(50, 99), car))
+        # random.expovariate takes lambd = 1/mean 
+        # Returned values range from 0 to positive infinity if lambd is positive,
+        # and from negative infinity to 0 if lambd is negative.
+        rand_wash_time = random.expovariate(1 / self.mean_washtime)
+        yield self.env.timeout(rand_wash_time)
+        print("Washed {} in {} minutes." .format(car, round(rand_wash_time, 2)))
+    
+
+    def wax(self, car):
+        """The waxing processes after-wash. It takes a ``car`` processes and tries
+        to wax it."""
+        rand_wax_time = random.uniform( self.waxtime_params[0],
+                                        self.waxtime_params[1])
+        yield self.env.timeout(rand_wax_time)
+        print("Waxed {} in {} minutes." .format(car, round(rand_wax_time, 2)))
 
 
 def car(env, name, cw):
     """The car process (each car has a ``name``) arrives at the carwash
-    (``cw``) and requests a cleaning machine.
+    (``cw``) and requests a washing machine.
 
-    It then starts the washing process, waits for it to finish and
-    leaves to never come back ...
+    It starts the washing process and waits for it to finish.
 
+    After washing, car requests a waxing machine.
+    Then it starts the waxing process and waits for it to finish.
+
+    Then car leaves the carwash system.
     """
-    print('%s arrives at the carwash at %.2f.' % (name, env.now))
-    with cw.machine.request() as request:
-        yield request
+    print('{} arrives at the carwash at {} minutes'.format(name, round(env.now,2)))
 
-        print('%s enters the carwash at %.2f.' % (name, env.now))
+    with cw.wash_machine.request() as wash_request:
+        yield wash_request
+
+        print('{} enters the wash machine at {} minutes'.format(name, round(env.now,2)))
         yield env.process(cw.wash(name))
 
-        print('%s leaves the carwash at %.2f.' % (name, env.now))
+        print('{} leaves the wash machine at {} minutes'.format(name, round(env.now,2)))
+    
+    with cw.wax_machine.request() as wax_request:
+        yield wax_request
+
+        print('{} enters the wax machine at {} minutes'.format(name, round(env.now,2)))
+        yield env.process(cw.wax(name))
+
+        print('{} leaves the wax machine & carwash at {} minutes\n'.format(name, round(env.now,2)))
 
 
-def setup(env, num_machines, washtime, t_inter):
+def setup(env,
+            num_wash_machines,
+            num_wax_machines,
+            mean_washtime,
+            waxtime_params,
+            t_inter):
     """Create a carwash, a number of initial cars and keep creating cars
     approx. every ``t_inter`` minutes."""
     # Create the carwash
-    carwash = Carwash(env, num_machines, washtime)
+    carwash = Carwash(env,
+                        num_wash_machines,
+                        num_wax_machines,
+                        mean_washtime,
+                        waxtime_params)
 
-    # Create 4 initial cars
-    for i in range(4):
-        env.process(car(env, 'Car %d' % i, carwash))
-
+    # Initialize first car ID
+    i = 0
+    
     # Create more cars while the simulation is running
     while True:
-        yield env.timeout(random.randint(t_inter - 2, t_inter + 2))
+        # random.expovariate takes lambd = 1/mean 
+        yield env.timeout(random.expovariate(1 / t_inter))
         i += 1
-        env.process(car(env, 'Car %d' % i, carwash))
+        env.process(car(env, 'Car {}'.format(i), carwash))
 
 
 # Setup and start the simulation
-print('Carwash')
-print('Check out http://youtu.be/fXXmeP9TvBg while simulating ... ;-)')
+print('Carwash in action..!!')
 random.seed(RANDOM_SEED)  # This helps reproducing the results
 
 # Create an environment and start the setup process
 env = simpy.Environment()
-env.process(setup(env, NUM_MACHINES, WASHTIME, T_INTER))
+env.process(setup(env,
+                    NUM_WASH_MACHINES,
+                    NUM_WAX_MACHINES,
+                    MEAN_WASHTIME,
+                    WAXTIME_PARAMS,
+                    T_INTERARRIVAL))
 
 # Execute!
 env.run(until=SIM_TIME)
